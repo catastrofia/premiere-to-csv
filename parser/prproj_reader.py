@@ -2,7 +2,6 @@ import gzip
 import xml.etree.ElementTree as ET
 import streamlit as st
 
-@st.cache_data(show_spinner=False)
 def load_xml_tree(raw_bytes: bytes):
     """Return XML root element. Accepts gzipped or plain XML bytes."""
     try:
