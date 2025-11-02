@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 
-from parser.prproj_reader import load_xml_tree, discover_sequences
+from parser.prproj_reader import load_xml_tree, find_sequences
 from parser.timeline_flatten import extract_rows
 from parser.timecode import ticks_to_tc_24fps
 
@@ -26,7 +26,7 @@ if not uploaded:
 xml_root = load_xml_tree(uploaded.getvalue())
 
 # Discover sequences and pick main
-seq_map = discover_sequences(xml_root)
+seq_map = find_sequences(xml_root)
 if not seq_map:
     st.error("No sequences found in the project.")
     st.stop()

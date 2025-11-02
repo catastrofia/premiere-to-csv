@@ -14,8 +14,8 @@ def load_xml_tree(raw_bytes: bytes):
         xml_bytes = raw_bytes[start:] if start >= 0 else raw_bytes
     return ET.fromstring(xml_bytes)
 
-@st.cache_data(show_spinner=False)
-def discover_sequences(root):
+
+def find_sequences(root):
     """Return dict: name -> element for all sequences found."""
     seqs = {}
     for elem in root.iter():
