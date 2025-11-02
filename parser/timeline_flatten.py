@@ -41,7 +41,6 @@ def _classify(name, typ):
             c = "video"
     return c, source
 
-@st.cache_data(show_spinner=True)
 def extract_rows(root, sequence_name: str, include_nested: bool = True, include_parent: bool = False):
     """Return list of dict rows with StartTicks/EndTicks in main-sequence time."""
     by_id, by_uid = _collect_objects(root)
