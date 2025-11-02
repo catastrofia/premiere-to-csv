@@ -38,22 +38,23 @@ if not seq_map:
 
 default_seq = "SteelV1" if "SteelV1" in seq_map else sorted(seq_map.keys())[0]
 
-col1, col2, col3, col4 = st.columns([2,1,1,1])
+# Options UI
+col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
 with col1:
     options = sorted(seq_map.keys())
-    main_seq = st.selectbox("Main sequence", options=options, index=options.index(default_seq))
+    main_seq = st.selectbox("Select sequence", options=options, index=options.index(default_seq))
 with col2:
-    include_nested = st.checkbox("Include nested sequences", value=True)
+    expand_nested = st.checkbox("Expand nested sequences", value=True)
 with col3:
-    include_parent = st.checkbox("Include parent nest row", value=False)
+    include_parent = st.checkbox("Keep parent row when expanded", value=False)
 with col4:
     track_one_based = st.checkbox("1-based track numbering", value=True)
 
-# Extract flattened rows
+# Extract flattened rows with new parameter names
 rows = extract_rows(
     root=xml_root,
     sequence_name=main_seq,
-    include_nested=include_nested,
+    expand_nested=expand_nested,
     include_parent=include_parent
 )
 
@@ -70,63 +71,54 @@ df = pd.DataFrame(rows)[cols]
 if track_one_based and "Track" in df.columns:
     df["Track"] = df["Track"].apply(lambda x: (x + 1) if pd.notna(x) else x)
 
-# --- New: derive Title and StockID from Name/Source ---
+# --- Derive strict Title and StockID rules (Artlist / Imago / Colourbox) ---
 import os, re
+
 def derive_title_and_stock(name: str, source: str):
     if not name:
         return "", ""
-    base, _ext = os.path.splitext(name)
-    title = base  # start with base
-    stock_id = ""
 
+    base, _ext = os.path.splitext(name)
+    title = base
+    stock_id = ""
     low = base.lower()
     parts = base.split("_") if "_" in base else []
 
-    # Artlist: "1234567_Title_..."
-    if "artlist" in low or source == "Artlist":
-        if parts and parts[0].isdigit():
+    # Artlist
+    if ("artlist" in low) or (source == "Artlist"):
+        # Stock ID: first numeric token before first underscore
+        if len(parts) >= 2 and parts[0].isdigit():
             stock_id = parts[0]
-            if len(parts) > 1:
-                title = parts[1].strip()
+            # Title strictly between first and second underscore
+            title = parts[1]
 
-    # Imago: "imago#############_Title..."
-    if ("imago" in low or source == "Imago") and not stock_id:
-        m = re.search(r"(?i)(imago\\d+)_", base)
+    # Imago → imago + digits (lowercase)
+    if not stock_id:
+        m = re.search(r"(?i)\bimago(\d+)\b", base)
         if m:
-            stock_id = m.group(1)
-            # Title after that prefix if present
-            after = base[m.end():]
-            if after:
-                title = after.split("_")[0].strip() or title
+            stock_id = f"imago{m.group(1)}"
 
-    # Colourbox/Colorbox: "... colourbox123456 _ Title ..."
-    if (("colourbox" in low) or ("colorbox" in low) or source == "Colourbox") and not stock_id:
-        m = re.search(r"(?i)(colou?rbox[\\-_]?\\d+)", base)
+    # Colourbox/Colorbox → COLOURBOX + digits (uppercase)
+    if not stock_id:
+        m = re.search(r"(?i)\bcolo(u)?rbox[-_ ]?(\d+)\b", base)
         if m:
-            stock_id = m.group(1)
-            # If there's an underscore after the ID, take next token as a likely title
-            after = base[m.end():]
-            if after.startswith("_"):
-                after = after[1:]
-            if after:
-                title = after.split("_")[0].strip() or title
+            stock_id = f"COLOURBOX{m.group(2)}"
 
-    # Generic stock pattern: if there's an underscore and we didn't adjust title yet,
-    # take the part after the first underscore as a descriptive title.
-    if "_" in base:
+    # Generic fallback: if we didn't set a special Artlist title and there is an underscore,
+    # use the part after the first underscore as a descriptive title.
+    if "_" in base and (("artlist" not in low) and not stock_id):
         first, rest = base.split("_", 1)
-        # If first was an ID-like token (digits or provider code), prefer rest as title
-        if (first.isdigit() or first.lower().startswith(("imago", "colourbox", "colorbox"))) and rest.strip():
+        if rest.strip():
             title = rest.strip()
 
-    return title, stock_id
+    return title.strip(), stock_id.strip()
 
 df[["Title","StockID"]] = df.apply(
     lambda r: pd.Series(derive_title_and_stock(r["Name"], r["Source"])),
     axis=1
 )
 
-# Reorder columns (Type, Track, Name, Title, ClipType, Source, StockID, StartTC, EndTC)
+# Reorder columns
 df = df[["Type","Track","Name","Title","ClipType","Source","StockID","StartTC","EndTC"]]
 
 # ---- Sorting (Video → Audio; chronological; track; name) ----

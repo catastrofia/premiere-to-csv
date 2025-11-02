@@ -27,6 +27,17 @@ def _collect_objects(root):
     return by_id, by_uid
 
 
+def _discover_sequences(root):
+    """Return dict: Name -> Sequence element."""
+    seqs = {}
+    for e in root.iter():
+        if e.tag.endswith("Sequence"):
+            nm = _first_text(e, "Name")
+            if nm:
+                seqs[nm] = e
+    return seqs
+
+
 def _ticks(el, tag):
     t = el.find(f".//{tag}")
     if t is not None and t.text:
@@ -45,11 +56,11 @@ def _classify(name, typ):
     if typ == "Audio":
         c = "audio"
     else:
-        if any(n.endswith(ext) for ext in (".png",".jpg",".jpeg",".tif",".tiff",".gif",".bmp",".webp")):
+        if any(n.endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".gif", ".bmp", ".webp")):
             c = "image"
-        elif any(n.endswith(ext) for ext in (".mp4",".mov",".m4v",".avi",".mxf",".mkv")):
+        elif any(n.endswith(ext) for ext in (".mp4", ".mov", ".m4v", ".avi", ".mxf", ".mkv")):
             c = "video"
-        elif (name or "").lower() in ("graphic","white") or (name and "." not in name):
+        elif (name or "").lower() in ("graphic", "white") or (name and "." not in name):
             c = "graphic"
         else:
             c = "video"
@@ -67,7 +78,7 @@ def _basename_from_paths(elem):
 
 
 def _deep_name_scan(elem):
-    # Prefer specific name-like tags first
+    # Prefer explicit name-like tags first
     preferred = ("ClipName", "DisplayName", "Title", "Name")
     for tag in preferred:
         t = elem.find(f".//{tag}")
@@ -100,14 +111,14 @@ def _find_sequence_reference(elem, by_id, by_uid):
     return None
 
 
-def _resolve_name_and_nested(obj, by_id, by_uid):
+def _resolve_name_and_nested(obj, by_id, by_uid, seq_by_name):
     """
     Return (name, nested_seq_or_None) for a TrackItem's referenced object.
-    Follows SubClip and any other ObjectRef/URef that points to a Sequence.
+    Follows SubClip, any ObjectRef/URef chain, and finally falls back by name.
     """
     name = _first_text(obj, "Name")
 
-    # 1) Standard SubClip reference
+    # A) Standard SubClip reference
     nested_seq = None
     seq_ref = obj.find(".//SubClip")
     if seq_ref is not None:
@@ -120,40 +131,56 @@ def _resolve_name_and_nested(obj, by_id, by_uid):
             else:
                 name = name or _first_text(target, "Name") or _deep_name_scan(target) or _basename_from_paths(target)
 
-    # 2) If still no nested seq detected, try any other ref chain → Sequence
+    # B) If still no nested seq: any other ObjectRef/URef chain → Sequence
     if nested_seq is None:
         seq = _find_sequence_reference(obj, by_id, by_uid)
         if seq is not None:
             nested_seq = seq
             name = name or _first_text(nested_seq, "Name")
 
-    # 3) If still no name, scan locally and via file paths
+    # C) Fallback by name equals a known sequence (e.g., "Emissions Normal Copy 01")
+    if nested_seq is None and name and name in seq_by_name:
+        nested_seq = seq_by_name[name]
+
+    # D) Ensure we have some name
     if not name:
         name = _deep_name_scan(obj) or _basename_from_paths(obj)
 
     return name, nested_seq
 
 
-def extract_rows(root, sequence_name: str, include_nested: bool = True, include_parent: bool = False):
-    """Return list of dict rows with StartTicks/EndTicks in main-sequence time."""
+def extract_rows(root, sequence_name: str, expand_nested: bool = True, include_parent: bool = False):
+    """
+    Return list of dict rows with StartTicks/EndTicks in main-sequence time.
+
+    expand_nested=True  → flatten all nested sequences (children shown)
+    expand_nested=False → keep a single parent row for the nested sequence
+    include_parent=True → when expanding, also keep the parent row as a header
+    """
     by_id, by_uid = _collect_objects(root)
+    seq_by_name = _discover_sequences(root)
 
     # Find main sequence by name
-    main_seq = None
-    for elem in root.iter():
-        if elem.tag.endswith("Sequence"):
-            if _first_text(elem, "Name") == sequence_name:
+    main_seq = seq_by_name.get(sequence_name)
+    if main_seq is None:
+        for elem in root.iter():
+            if elem.tag.endswith("Sequence") and _first_text(elem, "Name") == sequence_name:
                 main_seq = elem
                 break
     if main_seq is None:
         return []
 
-    # Resolve track groups
+    # Resolve track groups (look in both First and Second)
     video_groups, audio_groups = [], []
     for tg in main_seq.findall(".//TrackGroups/TrackGroup"):
-        sec = tg.find("Second")
-        ref = sec.attrib.get("ObjectRef") if sec is not None else None
-        obj = by_id.get(ref) if ref else None
+        ref = None
+        for slot in ("First", "Second"):
+            slot_el = tg.find(slot)
+            if slot_el is not None:
+                ref = slot_el.attrib.get("ObjectRef") or slot_el.attrib.get("ObjectURef")
+                if ref:
+                    break
+        obj = (by_id.get(ref) or by_uid.get(ref)) if ref else None
         if obj is None:
             continue
         if obj.tag.endswith("VideoTrackGroup"):
@@ -179,18 +206,14 @@ def extract_rows(root, sequence_name: str, include_nested: bool = True, include_
     rows = []
 
     def add_items(track_elem, kind, track_no, offset_ticks=0):
-        for ti in track_elem.findall(".//ClipTrack/ClipItems/TrackItems/TrackItem"):
-            ref = ti.attrib.get("ObjectRef")
-            obj = by_id.get(ref)
-            if obj is None:
-                continue
+        # Be permissive: collect any descendant TrackItem
+        for obj in track_elem.findall(".//TrackItem"):
             start = _ticks(obj, "Start")
             end = _ticks(obj, "End")
             if start is None or end is None:
                 continue
 
-            # Resolve name + nested
-            name, nested_seq = _resolve_name_and_nested(obj, by_id, by_uid)
+            name, nested_seq = _resolve_name_and_nested(obj, by_id, by_uid, seq_by_name)
 
             parent_row = {
                 "Type": kind,
@@ -202,15 +225,20 @@ def extract_rows(root, sequence_name: str, include_nested: bool = True, include_
                 "EndTicks": end + offset_ticks,
             }
 
-            if nested_seq is not None and include_nested:
+            if nested_seq is not None and expand_nested:
                 if include_parent:
                     rows.append(parent_row)
-                # Recurse into nested sequence, preserving track number and adding offset
+                # Recurse into nested sequence, preserving parent track number
                 n_vid_groups, n_aud_groups = [], []
                 for tg2 in nested_seq.findall(".//TrackGroups/TrackGroup"):
-                    sec2 = tg2.find("Second")
-                    rf2 = sec2.attrib.get("ObjectRef") if sec2 is not None else None
-                    o2 = by_id.get(rf2) if rf2 else None
+                    ref2 = None
+                    for slot in ("First", "Second"):
+                        slot2 = tg2.find(slot)
+                        if slot2 is not None:
+                            ref2 = slot2.attrib.get("ObjectRef") or slot2.attrib.get("ObjectURef")
+                            if ref2:
+                                break
+                    o2 = (by_id.get(ref2) or by_uid.get(ref2)) if ref2 else None
                     if o2 is None:
                         continue
                     if o2.tag.endswith("VideoTrackGroup"):
