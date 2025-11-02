@@ -57,7 +57,6 @@ def _classify(name, typ):
 
 
 def _basename_from_paths(elem):
-    # Try common path tags and take basename
     for tag in ("AbsolutePath", "RelativePath", "Path", "FilePath"):
         p = _first_text(elem, tag)
         if p:
@@ -74,22 +73,41 @@ def _deep_name_scan(elem):
         t = elem.find(f".//{tag}")
         if t is not None and t.text and t.text.strip():
             return t.text.strip()
-    # Then, any descendant whose tag endswith 'Name'
+    # Then any descendant whose tag endswith 'Name'
     for d in elem.iter():
         if d.tag.endswith("Name") and d.text and d.text.strip():
             return d.text.strip()
     return None
 
 
+def _find_sequence_reference(elem, by_id, by_uid):
+    """Return a Sequence element if elem (or its descendants) reference one."""
+    # Direct attributes
+    for key in ("ObjectRef", "ObjectURef"):
+        ref = elem.attrib.get(key)
+        if ref:
+            target = by_id.get(ref) or by_uid.get(ref)
+            if target is not None and target.tag.endswith("Sequence"):
+                return target
+    # Descendants
+    for sub in elem.iter():
+        for key in ("ObjectRef", "ObjectURef"):
+            ref = sub.attrib.get(key)
+            if ref:
+                target = by_id.get(ref) or by_uid.get(ref)
+                if target is not None and target.tag.endswith("Sequence"):
+                    return target
+    return None
+
+
 def _resolve_name_and_nested(obj, by_id, by_uid):
     """
-    Return (name, nested_seq_or_None) for a TrackItem target element.
-    Follows SubClip references and falls back to deep scans / file path base name.
+    Return (name, nested_seq_or_None) for a TrackItem's referenced object.
+    Follows SubClip and any other ObjectRef/URef that points to a Sequence.
     """
-    # 1) Direct name on the object itself
     name = _first_text(obj, "Name")
 
-    # 2) SubClip indirection
+    # 1) Standard SubClip reference
     nested_seq = None
     seq_ref = obj.find(".//SubClip")
     if seq_ref is not None:
@@ -100,10 +118,16 @@ def _resolve_name_and_nested(obj, by_id, by_uid):
                 nested_seq = target
                 name = name or _first_text(nested_seq, "Name")
             else:
-                # Try names on the target, then fallbacks
                 name = name or _first_text(target, "Name") or _deep_name_scan(target) or _basename_from_paths(target)
 
-    # 3) If still empty, scan original obj and its paths
+    # 2) If still no nested seq detected, try any other ref chain → Sequence
+    if nested_seq is None:
+        seq = _find_sequence_reference(obj, by_id, by_uid)
+        if seq is not None:
+            nested_seq = seq
+            name = name or _first_text(nested_seq, "Name")
+
+    # 3) If still no name, scan locally and via file paths
     if not name:
         name = _deep_name_scan(obj) or _basename_from_paths(obj)
 
@@ -165,7 +189,7 @@ def extract_rows(root, sequence_name: str, include_nested: bool = True, include_
             if start is None or end is None:
                 continue
 
-            # Resolve name and nested sequence
+            # Resolve name + nested
             name, nested_seq = _resolve_name_and_nested(obj, by_id, by_uid)
 
             parent_row = {
