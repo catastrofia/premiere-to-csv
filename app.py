@@ -87,10 +87,8 @@ st.download_button(
 )
 
 with st.expander("What happens to my file?"):
-    st.markdown(
-        "- Your upload is kept in **RAM** for this session and cleared on rerun/close.
-"
-        "- No data is persisted on disk by the app.
-"
-        "- Parsing is cached only for this content to speed up UI tweaks."
-    )
+    st.markdown("""
+- Your upload is kept in **RAM** for this session and cleared on rerun/close.
+- No data is persisted on disk by the app.
+- Parsing is cached only for this content to speed up UI tweaks.
+    """)
