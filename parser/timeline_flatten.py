@@ -1,29 +1,43 @@
 import streamlit as st
+import xml.etree.ElementTree as ET
+import os
+
 
 def _first_text(elem, tag):
     if elem is None:
         return None
     for c in elem:
         if c.tag.endswith(tag):
-            return (c.text or "").strip()
+            t = (c.text or "").strip()
+            if t:
+                return t
     t = elem.find(".//" + tag)
     return (t.text or "").strip() if t is not None and t.text else None
+
 
 def _collect_objects(root):
     by_id, by_uid = {}, {}
     for e in root.iter():
         oid = e.attrib.get("ObjectID")
-        if oid: by_id[oid] = e
+        if oid:
+            by_id[oid] = e
         ouid = e.attrib.get("ObjectUID")
-        if ouid: by_uid[ouid] = e
+        if ouid:
+            by_uid[ouid] = e
     return by_id, by_uid
+
 
 def _ticks(el, tag):
     t = el.find(f".//{tag}")
     if t is not None and t.text:
         s = t.text.strip()
-        return int(s) if s.isdigit() else None
+        if s.lstrip("-+").isdigit():
+            try:
+                return int(s)
+            except Exception:
+                return None
     return None
+
 
 def _classify(name, typ):
     n = (name or "").lower()
@@ -40,6 +54,61 @@ def _classify(name, typ):
         else:
             c = "video"
     return c, source
+
+
+def _basename_from_paths(elem):
+    # Try common path tags and take basename
+    for tag in ("AbsolutePath", "RelativePath", "Path", "FilePath"):
+        p = _first_text(elem, tag)
+        if p:
+            base = os.path.basename(p.replace("\\", "/"))
+            if base:
+                return base
+    return None
+
+
+def _deep_name_scan(elem):
+    # Prefer specific name-like tags first
+    preferred = ("ClipName", "DisplayName", "Title", "Name")
+    for tag in preferred:
+        t = elem.find(f".//{tag}")
+        if t is not None and t.text and t.text.strip():
+            return t.text.strip()
+    # Then, any descendant whose tag endswith 'Name'
+    for d in elem.iter():
+        if d.tag.endswith("Name") and d.text and d.text.strip():
+            return d.text.strip()
+    return None
+
+
+def _resolve_name_and_nested(obj, by_id, by_uid):
+    """
+    Return (name, nested_seq_or_None) for a TrackItem target element.
+    Follows SubClip references and falls back to deep scans / file path base name.
+    """
+    # 1) Direct name on the object itself
+    name = _first_text(obj, "Name")
+
+    # 2) SubClip indirection
+    nested_seq = None
+    seq_ref = obj.find(".//SubClip")
+    if seq_ref is not None:
+        sr = seq_ref.attrib.get("ObjectRef") or seq_ref.attrib.get("ObjectURef")
+        target = by_id.get(sr) or by_uid.get(sr)
+        if target is not None:
+            if target.tag.endswith("Sequence"):
+                nested_seq = target
+                name = name or _first_text(nested_seq, "Name")
+            else:
+                # Try names on the target, then fallbacks
+                name = name or _first_text(target, "Name") or _deep_name_scan(target) or _basename_from_paths(target)
+
+    # 3) If still empty, scan original obj and its paths
+    if not name:
+        name = _deep_name_scan(obj) or _basename_from_paths(obj)
+
+    return name, nested_seq
+
 
 def extract_rows(root, sequence_name: str, include_nested: bool = True, include_parent: bool = False):
     """Return list of dict rows with StartTicks/EndTicks in main-sequence time."""
@@ -95,16 +164,9 @@ def extract_rows(root, sequence_name: str, include_nested: bool = True, include_
             end = _ticks(obj, "End")
             if start is None or end is None:
                 continue
-            name = _first_text(obj, "Name")
 
-            # Check for nested sequence
-            seq_ref = obj.find(".//SubClip")
-            nested_seq = None
-            if seq_ref is not None:
-                sr = seq_ref.attrib.get("ObjectRef") or seq_ref.attrib.get("ObjectURef")
-                nested_seq = by_id.get(sr) or by_uid.get(sr)
-                if nested_seq is not None and not nested_seq.tag.endswith("Sequence"):
-                    nested_seq = None
+            # Resolve name and nested sequence
+            name, nested_seq = _resolve_name_and_nested(obj, by_id, by_uid)
 
             parent_row = {
                 "Type": kind,
@@ -125,10 +187,12 @@ def extract_rows(root, sequence_name: str, include_nested: bool = True, include_
                     sec2 = tg2.find("Second")
                     rf2 = sec2.attrib.get("ObjectRef") if sec2 is not None else None
                     o2 = by_id.get(rf2) if rf2 else None
-                    if o2 is None: 
+                    if o2 is None:
                         continue
-                    if o2.tag.endswith("VideoTrackGroup"): n_vid_groups.append(o2)
-                    elif o2.tag.endswith("AudioTrackGroup"): n_aud_groups.append(o2)
+                    if o2.tag.endswith("VideoTrackGroup"):
+                        n_vid_groups.append(o2)
+                    elif o2.tag.endswith("AudioTrackGroup"):
+                        n_aud_groups.append(o2)
                 for idx2, tr2 in tracks_from_groups(n_vid_groups):
                     add_items(tr2, "Video", track_no, offset_ticks=start + offset_ticks)
                 for idx2, tr2 in tracks_from_groups(n_aud_groups):

@@ -8,6 +8,11 @@ from parser.timecode import ticks_to_tc_24fps
 st.set_page_config(page_title="Premiere → CSV", layout="wide")
 st.title("Premiere → CSV (Flattened, 24 fps)")
 
+with st.sidebar:
+    if st.button("🔄 Clear cache (dev)"):
+        st.cache_data.clear()
+        st.success("Cleared cached data. Please re-upload your file.")
+
 st.markdown(
     "Upload a Premiere Pro project (`.prproj`) or gzipped XML (`.txt`). "
     "Files are processed **in-memory** and not stored on the server."
