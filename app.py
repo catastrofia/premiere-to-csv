@@ -234,4 +234,3 @@ with st.expander("What happens to my file?"):
 - No data is persisted on disk by the app.
 - Parsing is cached only inside `load_xml_tree` to keep the app responsive.
     """)
-``
