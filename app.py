@@ -50,18 +50,28 @@ with col3:
 with col4:
     track_one_based = st.checkbox("1-based track numbering", value=True)
 
-# Extract flattened rows with new parameter names
-rows = extract_rows(
-    root=xml_root,
-    sequence_name=main_seq,
-    expand_nested=expand_nested,
-    include_parent=include_parent
-)
+# 1) Handle empty result early
+if not rows:
+    st.warning("No timeline items found for this sequence (or after nested expansion). Try toggling 'Expand nested sequences' or selecting another sequence.")
+    st.stop()
 
-# Convert ticks to 24 fps timecode & finalize dataframe
+# 2) Convert ticks -> 24fps timecode BEFORE building the DataFrame
 for r in rows:
-    r["StartTC"] = ticks_to_tc_24fps(r.pop("StartTicks"))
-    r["EndTC"]   = ticks_to_tc_24fps(r.pop("EndTicks"))
+    s = r.pop("StartTicks", None)
+    e = r.pop("EndTicks", None)
+    r["StartTC"] = ticks_to_tc_24fps(s) if s is not None else ""
+    r["EndTC"]   = ticks_to_tc_24fps(e) if e is not None else ""
+
+# 3) Build DataFrame robustly and ensure expected columns exist
+import pandas as pd
+cols = ["Type","Track","Name","ClipType","Source","StartTC","EndTC"]
+df = pd.DataFrame.from_records(rows)
+
+for c in cols:
+    if c not in df.columns:
+        df[c] = ""  # add missing columns if any
+
+df = df[cols]  # now safe to select
 
 # ---- Build DataFrame (existing code above computed rows & timecodes) ----
 cols = ["Type","Track","Name","ClipType","Source","StartTC","EndTC"]
