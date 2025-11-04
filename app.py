@@ -25,7 +25,7 @@ except Exception:
 from parser.timeline_flatten import extract_rows
 
 # --- Version Tracking ---
-_VERSION = "v0.2.0 (Alpha)"
+_VERSION = "v0.2.1 (Alpha)" # Version bumped to 0.2.1 for the error handling fix
 # ------------------------
 
 # -------------------- PAGE CONFIG --------------------
@@ -140,7 +140,7 @@ if not rows_list:
         f"No clips found in sequence '{main_seq}'. "
         "Check the Debugging Console below for details on what was parsed."
     )
-    # st.stop() # Allow app to continue to display debug info
+    # The app will continue execution to show the debug console
 
 # -------------------- TICKS → TIMECODE BEFORE BUILDING DF --------------------
 for r in rows_list:
@@ -162,36 +162,59 @@ if track_one_based and "Track" in df.columns:
     df["Track"] = df["Track"].apply(lambda x: (x + 1) if pd.notna(x) else x)
 
 # -------------------- Title & StockID rules --------------------
-# Requirements: (Simplified for brevity, full logic is in your previous app.py)
-# - Artlist: [Artlist_123456_Song Title]
-# - Imago: [Imago_12345678]
 
 def derive_title_and_stock(name: str, source: str):
-    # (Full logic is omitted here for brevity, but will remain in your actual app.py)
+    # (Existing full derivation logic)
     if not name: return "", ""
     base, _ext = os.path.splitext(name)
     title = base
     stock_id = ""
     low = base.lower()
-    
-    # ... Your existing derivation logic ...
+    parts = base.split("_") if "_" in base else []
 
-    # Simple placeholder logic for display:
-    if "artlist" in low: title = name.split("_")[-2] if len(name.split("_")) > 2 else title
-    if "12345" in name: stock_id = "12345678"
+    # Artlist
+    if ("artlist" in low) or (source == "Artlist"):
+        if len(parts) >= 2 and parts[0].isdigit():
+            stock_id = parts[0]
+            title = parts[1]
+
+    # Imago → imago + digits (lowercase)
+    if not stock_id:
+        m = re.search(r"(?i)\bimago(\d+)\b", base)
+        if m:
+            stock_id = f"imago{m.group(1)}"
+
+    # Colourbox/Colorbox → COLOURBOX + digits (uppercase)
+    if not stock_id:
+        m = re.search(r"(?i)\bcolo(u)?rbox[-_ ]?(\d+)\b", base)
+        if m:
+            stock_id = f"COLOURBOX{m.group(2)}"
+
+    # Fallback: descriptive title after first underscore
+    if "_" in base and (("artlist" not in low) and not stock_id):
+        first, rest = base.split("_", 1)
+        if rest.strip():
+            title = rest.strip()
 
     return title.strip(), stock_id.strip()
 
-# Apply title/stock (Using placeholder logic for this display, assumes your full logic is working)
+# Apply title/stock
 from pandas import Series
 
-df[["Title","StockID"]] = df.apply(
-    lambda r: Series(derive_title_and_stock(r["Name"], r["Source"])),
-    axis=1
-)
+# FIX: Only attempt to apply if the DataFrame is not empty
+if not df.empty:
+    df[["Title","StockID"]] = df.apply(
+        lambda r: Series(derive_title_and_stock(r["Name"], r["Source"])),
+        axis=1
+    )
+else:
+    # Add empty columns to prevent issues if a download button were available
+    df["Title"] = ""
+    df["StockID"] = ""
 
-# Final column order and sorting (rest of your app.py logic)
-# ...
+
+# Final column order
+df = df[["Type","Track","Name","Title","ClipType","Source","StockID","StartTC","EndTC"]]
 
 # -------------------- SORT, PREVIEW, DOWNLOAD --------------------
 
@@ -201,12 +224,14 @@ def _to_sec(tc: str) -> int:
         return 3600*h + 60*m + s
     return -1
 
-df["_o"] = df["Type"].map({"Video": 0, "Audio": 1})
-df["_s"] = df["StartTC"].map(_to_sec)
-df = df.sort_values(["_o", "_s", "Track", "Name"]).drop(columns=["_o", "_s"])
+if not df.empty:
+    df["_o"] = df["Type"].map({"Video": 0, "Audio": 1})
+    df["_s"] = df["StartTC"].map(_to_sec)
+    df = df.sort_values(["_o", "_s", "Track", "Name"]).drop(columns=["_o", "_s"])
 
 if not rows_list:
-    st.stop() # Stop if no rows found (this is why we only show the warning above)
+    # If no rows, we skip the rest of the display
+    st.stop()
 
 st.subheader("Preview")
 st.dataframe(df.head(50), use_container_width=True, height=420)
@@ -245,12 +270,15 @@ with st.expander("🛠️ Debugging Console"):
     if rows_list:
         st.success(f"Successfully extracted {len(rows_list)} clip rows.")
         st.markdown("First 5 raw rows extracted (before timecode conversion):")
-        st.json(rows_list[:5])
+        # Ensure we only show JSON if the list has content
+        try:
+            st.json(rows_list[:5])
+        except Exception:
+            st.warning("Could not display raw rows.")
     else:
         st.error(f"Timeline extraction returned 0 rows for '{main_seq}'.")
         if xml_root is not None and main_seq:
-            # Check if the selected sequence element is even available in the XML root.
-            # This is a key diagnostic step for the "No clips found" error.
+            # This is the key diagnostic block
             seq_elem = seq_map.get(main_seq)
             if seq_elem is not None:
                 track_items = seq_elem.findall(".//TrackItem")
