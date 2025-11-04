@@ -207,7 +207,29 @@ def _collect_tracks_fallback(main_seq: ET.Element):
         idx = e.attrib.get("Index"); at.append((int(idx) if idx and idx.isdigit() else i, e))
     vt.sort(key=lambda x: x[0]); at.sort(key=lambda x: x[0])
     return vt, at
-
+    
+def _collect_tracks_by_declared_uids(main_seq, by_uid):
+    """
+    Fallback: derive tracks by reading the sequence's declared Track@ObjectURef GUIDs
+    and mapping those to top-level VideoClipTrack/AudioClipTrack via by_uid.
+    """
+    vt, at = [], []
+    for tr in main_seq.findall(".//TrackGroups//Track"):
+        uid = tr.attrib.get("ObjectURef") or tr.attrib.get("ObjectUID")
+        if not uid:
+            continue
+        elem = by_uid.get(uid)
+        if elem is None:
+            continue
+        idx_attr = elem.attrib.get("Index")
+        idx = int(idx_attr) if idx_attr and idx_attr.isdigit() else None
+        if elem.tag.endswith("VideoClipTrack"):
+            vt.append((idx, elem))
+        elif elem.tag.endswith("AudioClipTrack"):
+            at.append((idx, elem))
+    vt.sort(key=lambda x: (9999 if x[0] is None else x[0]))
+    at.sort(key=lambda x: (9999 if x[0] is None else x[0]))
+    return vt, at
 
 def extract_rows(root: ET.Element, sequence_name: str, expand_nested: bool = True, include_parent: bool = False):
     by_id, by_uid = _collect_objects(root); seq_by_name = _discover_sequences(root)
@@ -220,26 +242,50 @@ def extract_rows(root: ET.Element, sequence_name: str, expand_nested: bool = Tru
     
     # Use the robust track collection logic
     v, a = _collect_tracks_via_trackgroups(main, by_id, by_uid)
-    
-    # Fallback remains, though less necessary with the fix above
-    if not v and not a: v, a = _collect_tracks_fallback(main)
+    if not v and not a:
+    v, a = _collect_tracks_by_declared_uids(main, by_uid)
+    if not v and not a:
+    v, a = _collect_tracks_fallback(main)
     
     rows = []
-    def add_items(track_elem: ET.Element, kind: str, track_no, off=0):
-        # track_elem is now the resolved VideoTrack/AudioTrack object, which should contain TrackItem elements
-        for obj in track_elem.findall(".//TrackItem"): 
-            s = _ticks(obj, "Start"); e = _ticks(obj, "End")
-            if s is None or e is None: continue
-            name, nested = _resolve_name_and_nested(obj, by_id, by_uid, seq_by_name)
-            row = {"Type": kind, "Track": track_no, "Name": name, "ClipType": _classify(name, kind)[0], "Source": _classify(name, kind)[1], "StartTicks": s+off, "EndTicks": e+off}
-            if nested is not None and expand_nested:
-                if include_parent: rows.append(row)
-                nv, na = _collect_tracks_via_trackgroups(nested, by_id, by_uid)
-                if not nv and not na: nv, na = _collect_tracks_fallback(nested)
-                for _i, tr2 in nv: add_items(tr2, "Video", track_no if track_no is not None else 0, off=s+off)
-                for _i, tr2 in na: add_items(tr2, "Audio", track_no if track_no is not None else 0, off=s+off)
-            else:
+
+def add_items(track_elem, kind, track_no, off=0):
+    """
+    Traverse concrete clip items (VideoClipTrackItem/AudioClipTrackItem) instead of the
+    generic TrackItems/TrackItem stubs. The concrete items contain both timing
+    (ClipTrackItem/TrackItem/Start, End) and identity (SubClip/Name), which is reliable
+    across Premiere schemas.
+    """
+    item_tag = "VideoClipTrackItem" if kind == "Video" else "AudioClipTrackItem"
+    for item in track_elem.findall(f".//{item_tag}"):
+        ti = item.find(".//ClipTrackItem/TrackItem")
+        if ti is None:
+            continue
+        s = _ticks(ti, "Start"); e = _ticks(ti, "End")
+        if s is None or e is None:
+            continue
+        name, nested = _resolve_name_and_nested(item, by_id, by_uid, seq_by_name)
+        row = {
+            "Type": kind,
+            "Track": track_no,
+            "Name": name,
+            "ClipType": _classify(name, kind)[0],
+            "Source": _classify(name, kind)[1],
+            "StartTicks": s + off,
+            "EndTicks": e + off
+        }
+        if nested is not None and expand_nested:
+            if include_parent:
                 rows.append(row)
+            nv, na = _collect_tracks_via_trackgroups(nested, by_id, by_uid)
+            if not nv and not na:
+                nv, na = _collect_tracks_fallback(nested)
+            for _i, tr2 in nv:
+                add_items(tr2, "Video", track_no if track_no is not None else 0, off=s + off)
+            for _i, tr2 in na:
+                add_items(tr2, "Audio", track_no if track_no is not None else 0, off=s + off)
+        else:
+            rows.append(row)
                 
     for idx, tr in v: add_items(tr, "Video", idx if idx is not None else 0, 0)
     for idx, tr in a: add_items(tr, "Audio", idx if idx is not None else 0, 0)
