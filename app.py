@@ -242,6 +242,10 @@ else:
         file_name=f"{main_seq}_timecodes.csv",
         mime="text/csv"
     )
+    with st.expander("Debug (dev)"):
+    st.markdown(f"- Parsed rows: **{len(df)}**")
+    st.markdown("- If this is unexpectedly 0, try toggling **Expand nested sequences** or pick another sequence. "
+                "If still empty, please open an issue and attach a small .prproj sample.")
 
 # -------------------- DEBUGGING CONSOLE --------------------
 st.markdown("---")
