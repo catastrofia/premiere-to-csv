@@ -25,7 +25,7 @@ except Exception:
 from parser.timeline_flatten import extract_rows
 
 # --- Version Tracking ---
-_VERSION = "v0.2.1 (Alpha)" # Version bumped to 0.2.1 for the error handling fix
+_VERSION = "v0.2.2 (Alpha)" # Version bumped to 0.2.2 for critical error-handling fix
 # ------------------------
 
 # -------------------- PAGE CONFIG --------------------
@@ -131,9 +131,10 @@ try:
             include_parent=include_parent
         )
 except Exception as e:
-    st.error("Failed to read timeline items from the selected sequence.")
+    st.error("🚨 **CRITICAL ERROR** 🚨 Failed to read timeline items from the selected sequence.")
     st.exception(e)
-    st.stop()
+    # st.stop() # <-- REMOVED: This was preventing the Debug Console from showing!
+    rows_list = [] # Ensure rows_list is empty on a crash
 
 if not rows_list:
     st.warning(
@@ -164,7 +165,6 @@ if track_one_based and "Track" in df.columns:
 # -------------------- Title & StockID rules --------------------
 
 def derive_title_and_stock(name: str, source: str):
-    # (Existing full derivation logic)
     if not name: return "", ""
     base, _ext = os.path.splitext(name)
     title = base
@@ -231,18 +231,18 @@ if not df.empty:
 
 if not rows_list:
     # If no rows, we skip the rest of the display
-    st.stop()
+    pass
+else:
+    st.subheader("Preview")
+    st.dataframe(df.head(50), use_container_width=True, height=420)
 
-st.subheader("Preview")
-st.dataframe(df.head(50), use_container_width=True, height=420)
-
-csv_bytes = df.to_csv(index=False).encode("utf-8")
-st.download_button(
-    label=f"Download {main_seq}_timecodes.csv",
-    data=csv_bytes,
-    file_name=f"{main_seq}_timecodes.csv",
-    mime="text/csv"
-)
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label=f"Download {main_seq}_timecodes.csv",
+        data=csv_bytes,
+        file_name=f"{main_seq}_timecodes.csv",
+        mime="text/csv"
+    )
 
 # -------------------- DEBUGGING CONSOLE --------------------
 st.markdown("---")
@@ -270,7 +270,6 @@ with st.expander("🛠️ Debugging Console"):
     if rows_list:
         st.success(f"Successfully extracted {len(rows_list)} clip rows.")
         st.markdown("First 5 raw rows extracted (before timecode conversion):")
-        # Ensure we only show JSON if the list has content
         try:
             st.json(rows_list[:5])
         except Exception:
