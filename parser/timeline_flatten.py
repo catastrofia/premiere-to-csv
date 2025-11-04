@@ -20,8 +20,11 @@ def _first_text(elem: ET.Element | None, tag: str) -> str | None:
 def _collect_objects(root: ET.Element):
     by_id, by_uid = {}, {}
     for e in root.iter():
-        oid = e.attrib.get("ObjectID"); ouid = e.attrib.get("ObjectUID")
+        # Collect by ObjectID (used for TrackGroups/Sequence linking)
+        oid = e.attrib.get("ObjectID")
         if oid: by_id[oid] = e
+        # Collect by ObjectUID (used for MasterClip linking, etc.)
+        ouid = e.attrib.get("ObjectUID")
         if ouid: by_uid[ouid] = e
     return by_id, by_uid
 
@@ -109,12 +112,9 @@ def _find_sequence_reference(elem: ET.Element, by_id, by_uid):
 def _resolve_name_and_nested(obj: ET.Element, by_id, by_uid, seq_by_name):
     name = _first_text(obj, "Name"); nested = None
     sr = obj.find(".//SubClip")
+    mr = obj.find(".//MasterClip") 
     
-    # --- FIX START ---
-    # Find MasterClip reference as well
-    mr = obj.find(".//MasterClip")
-    # --- FIX END ---
-
+    # Logic for SubClip reference
     if sr is not None:
         ref = sr.attrib.get("ObjectRef") or sr.attrib.get("ObjectURef")
         tgt = by_id.get(ref) or by_uid.get(ref)
@@ -124,8 +124,7 @@ def _resolve_name_and_nested(obj: ET.Element, by_id, by_uid, seq_by_name):
             else:
                 name = name or _first_text(tgt, "Name") or _deep_name_scan(tgt) or _basename_from_paths(tgt)
     
-    # --- FIX START ---
-    # Add check for MasterClip reference if SubClip not found
+    # Logic for MasterClip reference (handles standard media clips)
     elif mr is not None:
         ref = mr.attrib.get("ObjectRef") or mr.attrib.get("ObjectURef")
         tgt = by_id.get(ref) or by_uid.get(ref)
@@ -133,9 +132,7 @@ def _resolve_name_and_nested(obj: ET.Element, by_id, by_uid, seq_by_name):
             if tgt.tag.endswith("Sequence"):
                 nested = tgt; name = name or _first_text(nested, "Name")
             else:
-                # This is the common case for standard media
                 name = name or _first_text(tgt, "Name") or _deep_name_scan(tgt) or _basename_from_paths(tgt)
-    # --- FIX END ---
 
     if nested is None:
         seq = _find_sequence_reference(obj, by_id, by_uid)
@@ -150,37 +147,58 @@ def _resolve_name_and_nested(obj: ET.Element, by_id, by_uid, seq_by_name):
 
 def _collect_tracks_via_trackgroups(main_seq: ET.Element, by_id, by_uid):
     vgs, ags = [], []
+    
+    # 1. Find all TrackGroup references inside the Sequence element
     for tg in main_seq.findall(".//TrackGroups/TrackGroup"):
         ref = None
-        for slot in ("First","Second"):
-            sl = tg.find(slot)
-            if sl is not None:
-                ref = sl.attrib.get("ObjectRef") or sl.attrib.get("ObjectURef")
-                if ref:
-                    break
+        # Check for direct ObjectRef/ObjectURef on the TrackGroup element itself (common case)
+        ref = tg.attrib.get("ObjectRef") or tg.attrib.get("ObjectURef")
+        
+        # If no direct reference, check the First/Second slots (for older/different XML format)
+        if not ref:
+            for slot in ("First", "Second"):
+                sl = tg.find(slot)
+                if sl is not None:
+                    ref = sl.attrib.get("ObjectRef") or sl.attrib.get("ObjectURef")
+                    if ref:
+                        break
+        
+        # 2. Resolve the reference to the actual TrackGroup object
         obj = (by_id.get(ref) or by_uid.get(ref)) if ref else None
+        
         if obj is None:
             continue
+        
+        # 3. Classify the resolved object
         if obj.tag.endswith("VideoTrackGroup"):
             vgs.append(obj)
         elif obj.tag.endswith("AudioTrackGroup"):
             ags.append(obj)
+    
+    # 4. Extract individual Tracks from the found TrackGroup objects
     def tracks(groups):
         out = []
         for g in groups:
+            # Tracks are found as children of the <Tracks> tag within the TrackGroup object
             for tr in g.findall(".//Tracks/Track"):
+                # Track element itself holds the index and reference to the full track data
                 idx = tr.attrib.get("Index")
-                guid = tr.attrib.get("ObjectURBef") or tr.attrib.get("ObjectUID") # Typo fix: ObjectURef
-                to = by_uid.get(guid)
+                guid = tr.attrib.get("ObjectURef") or tr.attrib.get("ObjectUID") or tr.attrib.get("ObjectRef")
+                
+                # Resolve the reference to the full VideoTrack or AudioTrack object
+                to = by_uid.get(guid) or by_id.get(guid)
+                
                 if to is not None:
                     out.append((int(idx) if idx and idx.isdigit() else None, to))
         out.sort(key=lambda x: (9999 if x[0] is None else x[0]))
         return out
+        
     return tracks(vgs), tracks(ags)
 
 
 def _collect_tracks_fallback(main_seq: ET.Element):
     vt, at = [], []
+    # Fallback only looks for tracks directly embedded in the sequence element, which is rare.
     v = [e for e in main_seq.iter() if e.tag.endswith("VideoTrack")]
     a = [e for e in main_seq.iter() if e.tag.endswith("AudioTrack")]
     for i, e in enumerate(v):
@@ -199,11 +217,17 @@ def extract_rows(root: ET.Element, sequence_name: str, expand_nested: bool = Tru
             if el.tag.endswith("Sequence") and _first_text(el, "Name") == sequence_name:
                 main = el; break
     if main is None: return []
+    
+    # Use the robust track collection logic
     v, a = _collect_tracks_via_trackgroups(main, by_id, by_uid)
+    
+    # Fallback remains, though less necessary with the fix above
     if not v and not a: v, a = _collect_tracks_fallback(main)
+    
     rows = []
     def add_items(track_elem: ET.Element, kind: str, track_no, off=0):
-        for obj in track_elem.findall(".//TrackItem"):
+        # track_elem is now the resolved VideoTrack/AudioTrack object, which should contain TrackItem elements
+        for obj in track_elem.findall(".//TrackItem"): 
             s = _ticks(obj, "Start"); e = _ticks(obj, "End")
             if s is None or e is None: continue
             name, nested = _resolve_name_and_nested(obj, by_id, by_uid, seq_by_name)
@@ -216,6 +240,8 @@ def extract_rows(root: ET.Element, sequence_name: str, expand_nested: bool = Tru
                 for _i, tr2 in na: add_items(tr2, "Audio", track_no if track_no is not None else 0, off=s+off)
             else:
                 rows.append(row)
+                
     for idx, tr in v: add_items(tr, "Video", idx if idx is not None else 0, 0)
     for idx, tr in a: add_items(tr, "Audio", idx if idx is not None else 0, 0)
+    
     return rows
