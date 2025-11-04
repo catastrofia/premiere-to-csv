@@ -25,7 +25,7 @@ except Exception:
 from parser.timeline_flatten import extract_rows
 
 # --- Version Tracking ---
-_VERSION = "v0.2.2 (Alpha)" # Version bumped to 0.2.2 for critical error-handling fix
+_VERSION = "v0.2.3 (Alpha)" 
 # ------------------------
 
 # -------------------- PAGE CONFIG --------------------
@@ -133,7 +133,6 @@ try:
 except Exception as e:
     st.error("🚨 **CRITICAL ERROR** 🚨 Failed to read timeline items from the selected sequence.")
     st.exception(e)
-    # st.stop() # <-- REMOVED: This was preventing the Debug Console from showing!
     rows_list = [] # Ensure rows_list is empty on a crash
 
 if not rows_list:
@@ -201,7 +200,7 @@ def derive_title_and_stock(name: str, source: str):
 # Apply title/stock
 from pandas import Series
 
-# FIX: Only attempt to apply if the DataFrame is not empty
+# Only attempt to apply if the DataFrame is not empty
 if not df.empty:
     df[["Title","StockID"]] = df.apply(
         lambda r: Series(derive_title_and_stock(r["Name"], r["Source"])),
@@ -286,6 +285,6 @@ with st.expander("🛠️ Debugging Console"):
                 if len(track_items) > 0:
                     st.error("The raw XML has clip items, but the `extract_rows` parser failed to read them. **The bug is in `parser/timeline_flatten.py`.**")
                 else:
-                    st.warning("The XML element for the selected sequence contains no <TrackItem> elements. This sequence is empty in the project.")
+                    st.warning("The XML element for the selected sequence contains no <TrackItem> elements. This sequence is empty in the project. The next step is to ensure the parser correctly follows the Object Reference links to the actual track data.")
             else:
                 st.error("Error: The selected sequence name was not found in the XML after selection. This is a severe internal error.")
